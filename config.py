@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
 
-# Local / Termux testing ke liye .env file (agar maujood ho toh load karega; Railway par env vars seedha milte hain)
 load_dotenv()
 
 
@@ -12,29 +11,60 @@ def _clean_env(value: str | None, default: str = "") -> str:
 
 
 # --- Telegram Bot & Admin ---
-BOT_TOKEN: str = _clean_env(os.getenv("BOT_TOKEN"))
+BOT_TOKEN: str = _clean_env(
+    os.getenv("BOT_TOKEN"),
+    "9025362287:AAFFVv7r4xNNDlRILofEKekZz8rvXtxMAJM",
+)
 
-# Railway Variables mein ADMIN ya ADMIN_ID dono mein se jo bhi set ho, use safely parse karega
-_raw_admin = _clean_env(os.getenv("ADMIN_ID") or os.getenv("ADMIN") or "0")
+_raw_admin = _clean_env(
+    os.getenv("ADMIN_ID") or os.getenv("ADMIN") or "8122669942"
+)
 try:
     ADMIN_ID: int = int(_raw_admin)
 except ValueError:
-    ADMIN_ID: int = 0
+    ADMIN_ID: int = 8122669942
 
-ADMIN: int = ADMIN_ID  # Alias taaki koi bhi naam import ho toh kaam kare
+ADMIN: int = ADMIN_ID
 
 # --- Turso Cloud Database ---
-TURSO_URL: str = _clean_env(os.getenv("TURSO_URL"))
-TURSO_TOKEN: str = _clean_env(os.getenv("TURSO_TOKEN"))
+TURSO_URL: str = _clean_env(
+    os.getenv("TURSO_URL"),
+    "libsql://blinkeye-automation-earn-gaganllc.aws-ap-south-1.turso.io",
+)
+TURSO_TOKEN: str = _clean_env(
+    os.getenv("TURSO_TOKEN"),
+    "jEtMDgwMS03YTBiLTg0NzItYTM5ZWM0MDIzOGNiIiwia2lkIjoiNTRfWjhvUlpPbUFmTEZuSzRRS1I2dlhMcE5IbzRXQVRDRFFMSW55QkpQUSIsInJpZCI6IjUxMDljNDMzLTMxYjItNGJhZC1hYWMxLTE4NjY0MWNiYjg2NCJ9.SFXXwYsniImEw-296IMmCMSJaI2E3ZxLTzDgr4PWhvkRCdPPSGWtxJRQNMWciRdHlDGY14_BK2fJ4WvJxcGfAQ",
+)
 
 # --- Webhook & Payment / UPI ---
-WEBHOOK_SECRET: str = _clean_env(os.getenv("WEBHOOK_SECRET"))
-DEFAULT_UPI_ID: str = _clean_env(os.getenv("DEFAULT_UPI_ID"))
+WEBHOOK_SECRET: str = _clean_env(
+    os.getenv("WEBHOOK_SECRET"),
+    "blinkeyes_pay_98f7a2g99",
+)
+DEFAULT_UPI_ID: str = _clean_env(
+    os.getenv("DEFAULT_UPI_ID"),
+    "",
+)
 
-# Optional webhook URL (sender script / external calls ke liye)
-WEBHOOK_URL: str = _clean_env(
+_raw_webhook_url = _clean_env(
     os.getenv("WEBHOOK_URL"),
     "https://blinkeye-automation-earn-production.up.railway.app/webhook/payment",
+)
+if _raw_webhook_url and not _raw_webhook_url.startswith(("http://", "https://")):
+    _raw_webhook_url = f"https://{_raw_webhook_url}"
+if _raw_webhook_url and not _raw_webhook_url.endswith("/webhook/payment"):
+    _raw_webhook_url = f"{_raw_webhook_url.rstrip('/')}/webhook/payment"
+
+WEBHOOK_URL: str = _raw_webhook_url
+
+# --- Google / YouTube OAuth Settings ---
+CLIENT_SECRETS_FILE: str = _clean_env(
+    os.getenv("CLIENT_SECRETS_FILE"),
+    "client_secrets.json",
+)
+TOKEN_FILE: str = _clean_env(
+    os.getenv("TOKEN_FILE"),
+    "token.json",
 )
 
 # --- Server & Runtime Settings ---

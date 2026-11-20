@@ -70,6 +70,11 @@ CJSON: str = _clean_env(
     "",
 )
 
+OAUTH_REDIRECT_URI: str = _clean_env(
+    os.getenv("OAUTH_REDIRECT_URI"),
+    "https://blinkeye-automation-earn-production.up.railway.app/oauth2callback",
+)
+
 # --- Server & Runtime Settings ---
 PORT: int = int(_clean_env(os.getenv("PORT"), "8080"))
 HOST: str = _clean_env(os.getenv("HOST"), "0.0.0.0")

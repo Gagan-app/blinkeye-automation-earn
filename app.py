@@ -286,6 +286,15 @@ def init_tables():
         client.close()
 
 
+def ensure_client_secrets_file():
+    if os.path.exists(CLIENT_SECRETS_FILE):
+        return
+    raw_json = os.environ.get("GOOGLE_CLIENT_SECRETS_JSON", "").strip()
+    if raw_json:
+        with open(CLIENT_SECRETS_FILE, "w", encoding="utf-8") as f:
+            f.write(raw_json)
+
+
 def is_feature_enabled(key: str) -> bool:
     client = get_db()
     try:
@@ -1236,6 +1245,7 @@ async def start_youtube_auth(
     await query.answer()
 
     try:
+        ensure_client_secrets_file()
         flow = Flow.from_client_secrets_file(
             CLIENT_SECRETS_FILE,
             scopes=YOUTUBE_SCOPES,

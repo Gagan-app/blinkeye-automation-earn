@@ -2236,18 +2236,31 @@ async def handle_approval_callback(
 # ---------------------------------------------------------
 
 def download_and_upload_link_to_youtube(url: str, user_id: int, channel_name: str):
+    import shutil
     import yt_dlp
 
     os.makedirs("downloads", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_tmpl = f"downloads/link_video_{user_id}_{timestamp}.%(ext)s"
 
-    ydl_opts = {
-        "format": "mp4/best",
-        "outtmpl": out_tmpl,
-        "noplaylist": True,
-        "quiet": True,
-    }
+    has_ffmpeg = shutil.which("ffmpeg") is not None
+
+    if has_ffmpeg:
+        ydl_opts = {
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+            "outtmpl": out_tmpl,
+            "merge_output_format": "mp4",
+            "noplaylist": True,
+            "quiet": True,
+        }
+    else:
+        # Agar ffmpeg nahi hai to merge ke bajay direct combined audio+video format lo
+        ydl_opts = {
+            "format": "best[ext=mp4]/best",
+            "outtmpl": out_tmpl,
+            "noplaylist": True,
+            "quiet": True,
+        }      
 
     downloaded_file = None
     video_title = f"Auto Post - {channel_name}"

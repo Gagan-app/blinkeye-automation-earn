@@ -1,4 +1,4 @@
-Import os
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,8 +42,8 @@ WEBHOOK_SECRET: str = _clean_env(
     "blinkeyes_pay_98f7a2g99",
 )
 DEFAULT_UPI_ID: str = _clean_env(
-    os.getenv("Q031118787@ybl"),
-    "",
+    os.getenv("DEFAULT_UPI_ID"),
+    "Q031118787@ybl",
 )
 
 _raw_webhook_url = _clean_env(

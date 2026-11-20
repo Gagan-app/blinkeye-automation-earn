@@ -174,8 +174,21 @@ def generate_title_and_tags(niche: str, script_text: str):
 # ---------------------------------------------------------
 # 🗄️ TURSO DATABASE HELPERS
 # ---------------------------------------------------------
+def _normalize_turso_url(raw_url: str) -> str:
+    url = (raw_url or "").strip()
+    if url.startswith("libsql://"):
+        return "https://" + url[len("libsql://") :]
+    if url.startswith("wss://"):
+        return "https://" + url[len("wss://") :]
+    if url.startswith("ws://"):
+        return "http://" + url[len("ws://") :]
+    return url
+
+
 def get_db():
-    return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
+    clean_url = _normalize_turso_url(TURSO_URL)
+    clean_token = (TURSO_TOKEN or "").strip()
+    return libsql_client.create_client_sync(url=clean_url, auth_token=clean_token)
 
 
 def extract_rows(result) -> list:
@@ -2415,7 +2428,12 @@ def run_web():
 # 🚀 MAIN ENTRYPOINT
 # ---------------------------------------------------------
 def main():
-    init_tables()
+    try:
+        init_tables()
+        logging.info("✅ Turso tables initialized successfully.")
+    except Exception as e:
+        logging.error(f"⚠️ init_tables() failed on startup: {e}")
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))

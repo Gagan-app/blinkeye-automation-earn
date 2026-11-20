@@ -1,4 +1,4 @@
-import os
+Import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,7 +42,7 @@ WEBHOOK_SECRET: str = _clean_env(
     "blinkeyes_pay_98f7a2g99",
 )
 DEFAULT_UPI_ID: str = _clean_env(
-    os.getenv("DEFAULT_UPI_ID"),
+    os.getenv("Q031118787@ybl"),
     "",
 )
 
@@ -63,7 +63,7 @@ CLIENT_SECRETS_FILE: str = _clean_env(
     "client_secrets.json",
 )
 TOKEN_FILE: str = _clean_env(
-    os.getenv("TOKEN_FILE"),
+    os.getenv("client_secret":"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","redirect_uris":["https://localhost"]}}"),
     "token.json",
 )
 

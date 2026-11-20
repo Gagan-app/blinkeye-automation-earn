@@ -57,14 +57,17 @@ if _raw_webhook_url and not _raw_webhook_url.endswith("/webhook/payment"):
 
 WEBHOOK_URL: str = _raw_webhook_url
 
-# --- Google / YouTube OAuth Settings ---
 CLIENT_SECRETS_FILE: str = _clean_env(
     os.getenv("CLIENT_SECRETS_FILE"),
     "client_secrets.json",
 )
 TOKEN_FILE: str = _clean_env(
-    os.getenv("client_secret":"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","redirect_uris":["https://localhost"]}}"),
+    os.getenv("TOKEN_FILE"),
     "token.json",
+)
+CJSON: str = _clean_env(
+    os.getenv("CJSON"),
+    "",
 )
 
 # --- Server & Runtime Settings ---

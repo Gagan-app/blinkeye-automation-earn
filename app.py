@@ -1278,7 +1278,7 @@ async def start_youtube_auth(
             "📺 **YouTube Account Authentication:**\n\n"
             "1. Upar diye gaye button par click karke apne YouTube/Google"
             " account se login karein.\n"
-            "2. Access allow karne ke baad blank/error page ka URL link copy"
+            "2. Access allow karne ke baad redirect page ka poora URL link copy"
             " karein.\n"
             "3. Us link ko yahan chat mein bhej dein!"
         )
@@ -2397,6 +2397,28 @@ def home():
     return "Blinkeyes Bot is Alive & Running!"
 
 
+def _register_oauth_callback_route():
+    try:
+        parsed = urlparse((OAUTH_REDIRECT_URI or "").strip())
+        cb_path = parsed.path or "/"
+        if cb_path and cb_path != "/":
+
+            @web_app.route(cb_path, methods=["GET"], endpoint="oauth_callback")
+            def oauth_callback():
+                return (
+                    "<h2>Google OAuth Redirect Received</h2>"
+                    "<p>Is page ka poora URL address bar se copy karein aur "
+                    "Telegram bot chat mein paste kar dein.</p>",
+                    200,
+                )
+
+    except Exception as e:
+        logging.warning(f"Could not register custom OAuth callback route: {e}")
+
+
+_register_oauth_callback_route()
+
+
 @web_app.route("/webhook/payment", methods=["POST"])
 def payment_webhook():
     data = request.json or {}
@@ -2438,6 +2460,8 @@ def run_web():
 # 🚀 MAIN ENTRYPOINT
 # ---------------------------------------------------------
 def main():
+    os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
     try:
         init_tables()
         logging.info("✅ Turso tables initialized successfully.")

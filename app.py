@@ -810,6 +810,49 @@ async def handle_text_messages(
         )
         return
 
+        # 10. Auto Post (Send Link) when user sends a URL
+    if re.match(r"^https?://", text_content, re.IGNORECASE):
+        client = get_db()
+        try:
+            res_ch = client.execute(
+                """
+                SELECT id, channel_info, platform
+                FROM connected_channels
+                WHERE user_id = ? AND platform = 'YouTube' AND active_mode = 'link'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (user.id,),
+            )
+            link_channels = extract_rows(res_ch)
+        finally:
+            client.close()
+
+        if link_channels:
+            _, ch_info, _ = link_channels[0]
+            status_msg = await update.message.reply_text(
+                f"⏳ Link receive hua! **{ch_info}** ke liye video download aur"
+                " YouTube par upload kiya ja raha hai...",
+                parse_mode="Markdown",
+            )
+            try:
+                vid_id, uploaded_title = await asyncio.to_thread(
+                    download_and_upload_link_to_youtube,
+                    text_content,
+                    user.id,
+                    ch_info,
+                )
+                await status_msg.edit_text(
+                    f"✅ **Video Uploaded to YouTube!**\n\n📺 Channel:"
+                    f" **{ch_info}**\n🎬 Title: `{uploaded_title}`\n🔗 Video"
+                    f" ID: `{vid_id}`",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                await status_msg.edit_text(
+                    f"❌ Upload Failed: `{e}`", parse_mode="Markdown"
+                )
+            return
+            
     # 3. User applying coupon
     if context.user_data.get("waiting_for_coupon"):
         context.user_data["waiting_for_coupon"] = False
@@ -2191,6 +2234,80 @@ async def handle_approval_callback(
 # ---------------------------------------------------------
 # 🎬 VIDEO GENERATION & SCHEDULER
 # ---------------------------------------------------------
+
+def download_and_upload_link_to_youtube(url: str, user_id: int, channel_name: str):
+    import yt_dlp
+
+    os.makedirs("downloads", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_tmpl = f"downloads/link_video_{user_id}_{timestamp}.%(ext)s"
+
+    ydl_opts = {
+        "format": "mp4/best",
+        "outtmpl": out_tmpl,
+        "noplaylist": True,
+        "quiet": True,
+    }
+
+    downloaded_file = None
+    video_title = f"Auto Post - {channel_name}"
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info:
+                raw_title = info.get("title") or video_title
+                video_title = f"{raw_title[:80]} #shorts"
+                downloaded_file = ydl.prepare_filename(info)
+
+        if not downloaded_file or not os.path.exists(downloaded_file):
+            # Fallback if extension differed
+            for fname in os.listdir("downloads"):
+                if fname.startswith(f"link_video_{user_id}_{timestamp}"):
+                    downloaded_file = os.path.join("downloads", fname)
+                    break
+
+        if not downloaded_file or not os.path.exists(downloaded_file):
+            raise FileNotFoundError("Downloaded video file not found.")
+
+        token_file = f"token_{user_id}.json"
+        if not os.path.exists(token_file):
+            raise FileNotFoundError(
+                f"OAuth token ({token_file}) missing. Please reconnect YouTube."
+            )
+
+        creds = Credentials.from_authorized_user_file(
+            token_file, YOUTUBE_SCOPES
+        )
+        youtube = build("youtube", "v3", credentials=creds)
+
+        body = {
+            "snippet": {
+                "title": video_title,
+                "description": f"Shared via Blinkeyes Automation\nSource: {url}\n\n#shorts",
+                "tags": ["shorts", "autopost", "blinkeyes"],
+                "categoryId": "22",
+            },
+            "status": {"privacyStatus": "public"},
+        }
+
+        media = MediaFileUpload(downloaded_file, chunksize=-1, resumable=True)
+        upload_req = youtube.videos().insert(
+            part=",".join(body.keys()), body=body, media_body=media
+        )
+
+        response = None
+        while response is None:
+            _, response = upload_req.next_chunk()
+
+        return response.get("id"), video_title
+    finally:
+        if downloaded_file and os.path.exists(downloaded_file):
+            try:
+                os.remove(downloaded_file)
+            except Exception:
+                pass
+                
 async def generate_and_upload_ai_video(bot, user_id: int, channel_name: str, niche: str):
     if not check_user_subscription_active(user_id):
         return

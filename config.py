@@ -36,6 +36,11 @@ TURSO_TOKEN: str = _clean_env(
     "jEtMDgwMS03YTBiLTg0NzItYTM5ZWM0MDIzOGNiIiwia2lkIjoiNTRfWjhvUlpPbUFmTEZuSzRRS1I2dlhMcE5IbzRXQVRDRFFMSW55QkpQUSIsInJpZCI6IjUxMDljNDMzLTMxYjItNGJhZC1hYWMxLTE4NjY0MWNiYjg2NCJ9.SFXXwYsniImEw-296IMmCMSJaI2E3ZxLTzDgr4PWhvkRCdPPSGWtxJRQNMWciRdHlDGY14_BK2fJ4WvJxcGfAQ",
 )
 
+YOUTUBE_SCOPES: list[str] = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube",
+]
+
 # --- Webhook & Payment / UPI ---
 WEBHOOK_SECRET: str = _clean_env(
     os.getenv("WEBHOOK_SECRET"),

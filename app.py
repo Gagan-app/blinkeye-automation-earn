@@ -211,6 +211,15 @@ def init_tables():
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS uploaded_bundle_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                channel_id INTEGER,
+                item_url TEXT,
+                uploaded_at TEXT
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS connected_channels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
@@ -758,12 +767,48 @@ async def submit_utr_prompt(
         parse_mode="Markdown",
     )
 
-
 async def handle_text_messages(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     user = update.effective_user
     text_content = update.message.text.strip() if update.message.text else ""
+
+    # 0. Saving Video Bundle URL
+    if context.user_data.get("waiting_for_bundle_url"):
+        ch_id = context.user_data.pop("bundle_target_ch_id", None)
+        context.user_data["waiting_for_bundle_url"] = False
+
+        if not ch_id:
+            await update.message.reply_text(
+                "⚠️ Channel context missing. Dobara 'Connect Video Bundle' par click karein."
+            )
+            return
+
+        if not re.match(r"^https?://", text_content, re.IGNORECASE):
+            await update.message.reply_text(
+                "⚠️ Kripya sahi `http://` ya `https://` bundle link bhejein."
+            )
+            return
+
+        client = get_db()
+        try:
+            client.execute(
+                """
+                UPDATE connected_channels
+                SET active_mode = 'bundle', bundle_url = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (text_content, ch_id, user.id),
+            )
+        finally:
+            client.close()
+
+        await update.message.reply_text(
+            f"✅ **Video Bundle Connected!**\n\n📦 Bundle URL: `{text_content}`\n"
+            "⏰ Ab aapke set kiye gaye **Schedule Slots** par is bundle se ek-ek video upload hoti rahegi.",
+            parse_mode="Markdown",
+        )
+        return
 
     # 1. Admin replying to user ticket
     if context.user_data.get("admin_replying_to_user") and user.id == ADMIN_ID:
@@ -780,6 +825,7 @@ async def handle_text_messages(
         except Exception as e:
             await update.message.reply_text(f"❌ Error sending reply: {e}")
         return
+        
 
     # 2. User sending support message
     if context.user_data.get("waiting_for_support_msg"):
@@ -1555,6 +1601,16 @@ async def handle_mode_niche_pick(
         if action == "setmode":
             mode = data[1]
             ch_id = int(data[2])
+            if mode == "bundle":
+                context.user_data["waiting_for_bundle_url"] = True
+                context.user_data["bundle_target_ch_id"] = ch_id
+                await query.message.reply_text(
+                    "📦 **Connect Video Bundle:**\n\n"
+                    "Kripya apna **YouTube Playlist link** ya **Google Drive / Video Bundle URL** yahan chat mein bhej dein:",
+                    parse_mode="Markdown",
+                )
+                return
+
             client.execute(
                 "UPDATE connected_channels SET active_mode = ? WHERE id = ?",
                 (mode, ch_id),
@@ -1577,7 +1633,7 @@ async def handle_mode_niche_pick(
             await show_specific_channel_modes(update, context, ch_id)
     finally:
         client.close()
-
+        
 
 async def channel_schedule_menu(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -2466,8 +2522,172 @@ async def generate_and_upload_ai_video(bot, user_id: int, channel_name: str, nic
                     os.remove(f)
                 except Exception:
                     pass
+                    
+async def generate_and_upload_bundle_video(
+    bot, user_id: int, channel_id: int, channel_name: str, bundle_url: str
+):
+    if not check_user_subscription_active(user_id):
+        return
+    if not bundle_url or bundle_url == "none":
+        return
 
+    import shutil
+    import yt_dlp
 
+    os.makedirs("downloads", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_tmpl = f"downloads/bundle_{user_id}_{timestamp}.%(ext)s"
+    downloaded_file = None
+
+    try:
+        # Step 1: Bundle / playlist items extract karein
+        flat_opts = {
+            "extract_flat": True,
+            "quiet": True,
+            "noplaylist": False,
+        }
+        with yt_dlp.YoutubeDL(flat_opts) as ydl:
+            info = ydl.extract_info(bundle_url, download=False)
+
+        candidates = []
+        if info and isinstance(info, dict) and info.get("entries"):
+            for entry in info["entries"]:
+                if not entry:
+                    continue
+                vid_url = entry.get("url") or entry.get("webpage_url")
+                if vid_url and not vid_url.startswith("http"):
+                    vid_url = f"https://www.youtube.com/watch?v={vid_url}"
+                if vid_url:
+                    candidates.append((vid_url, entry.get("title") or f"Bundle Video - {channel_name}"))
+        else:
+            title_val = info.get("title") if isinstance(info, dict) else f"Bundle Video - {channel_name}"
+            candidates.append((bundle_url, title_val or f"Bundle Video - {channel_name}"))
+
+        if not candidates:
+            return
+
+        # Step 2: Pehla un-uploaded item chunein
+        client = get_db()
+        try:
+            res_done = client.execute(
+                "SELECT item_url FROM uploaded_bundle_items WHERE user_id = ? AND channel_id = ?",
+                (user_id, channel_id),
+            )
+            done_set = {row[0] for row in extract_rows(res_done)}
+        finally:
+            client.close()
+
+        next_item = next(((u, t) for (u, t) in candidates if u not in done_set), None)
+        if not next_item:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"📦 **{channel_name}** ke Video Bundle ke saare videos upload ho chuke hain!",
+                parse_mode="Markdown",
+            )
+            return
+
+        target_url, raw_title = next_item
+        video_title = f"{str(raw_title)[:80]} #shorts"
+
+        # Step 3: Audio + Video ke saath download karein
+        has_ffmpeg = shutil.which("ffmpeg") is not None
+        if has_ffmpeg:
+            ydl_opts = {
+                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+                "outtmpl": out_tmpl,
+                "merge_output_format": "mp4",
+                "noplaylist": True,
+                "quiet": True,
+            }
+        else:
+            ydl_opts = {
+                "format": "best[ext=mp4]/best",
+                "outtmpl": out_tmpl,
+                "noplaylist": True,
+                "quiet": True,
+            }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            dl_info = ydl.extract_info(target_url, download=True)
+            if dl_info:
+                downloaded_file = ydl.prepare_filename(dl_info)
+
+        merged_mp4 = f"downloads/bundle_{user_id}_{timestamp}.mp4"
+        if has_ffmpeg and os.path.exists(merged_mp4):
+            downloaded_file = merged_mp4
+
+        if not downloaded_file or not os.path.exists(downloaded_file):
+            for fname in os.listdir("downloads"):
+                if fname.startswith(f"bundle_{user_id}_{timestamp}"):
+                    downloaded_file = os.path.join("downloads", fname)
+                    break
+
+        if not downloaded_file or not os.path.exists(downloaded_file):
+            raise FileNotFoundError("Bundle video file could not be downloaded.")
+
+        token_file = f"token_{user_id}.json"
+        if not os.path.exists(token_file):
+            raise FileNotFoundError(f"OAuth token ({token_file}) missing. Please reconnect YouTube.")
+
+        creds = Credentials.from_authorized_user_file(token_file, YOUTUBE_SCOPES)
+        youtube = build("youtube", "v3", credentials=creds)
+
+        body = {
+            "snippet": {
+                "title": video_title,
+                "description": f"Uploaded from Video Bundle via Blinkeyes Automation\n\n#shorts",
+                "tags": ["shorts", "bundle", "autopost", "blinkeyes"],
+                "categoryId": "22",
+            },
+            "status": {"privacyStatus": "public"},
+        }
+
+        media = MediaFileUpload(downloaded_file, chunksize=-1, resumable=True)
+        upload_req = youtube.videos().insert(
+            part=",".join(body.keys()), body=body, media_body=media
+        )
+
+        response = None
+        while response is None:
+            _, response = upload_req.next_chunk()
+
+        client = get_db()
+        try:
+            client.execute(
+                """
+                INSERT INTO uploaded_bundle_items (user_id, channel_id, item_url, uploaded_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, channel_id, target_url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+        finally:
+            client.close()
+
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"✅ **Bundle Video Uploaded!**\n\n📺 Channel: **{channel_name}**\n"
+                f"🎬 Title: `{video_title}`\n🔗 Video ID: `{response.get('id')}`"
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logging.error(f"Error in bundle video upload: {e}")
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"❌ **Bundle Upload Error ({channel_name}):** `{e}`",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+    finally:
+        if downloaded_file and os.path.exists(downloaded_file):
+            try:
+                os.remove(downloaded_file)
+            except Exception:
+                pass
+                
 async def check_and_run_schedules(bot):
     current_time = datetime.now().strftime("%H:%M")
     client = get_db()
@@ -2491,21 +2711,24 @@ async def check_and_run_schedules(bot):
             if current_time in active_slots:
                 res_ch = client.execute(
                     """
-                    SELECT id, platform, channel_info, active_mode, selected_niche
+                    SELECT id, platform, channel_info, active_mode, selected_niche, bundle_url
                     FROM connected_channels WHERE user_id = ? AND active_mode != 'none'
                     """,
                     (user_id,),
                 )
                 channels = extract_rows(res_ch)
                 for ch in channels:
-                    _, _, ch_name, mode, niche = ch
+                    ch_id, _, ch_name, mode, niche, bundle_url = ch
                     if mode == "ai":
                         await generate_and_upload_ai_video(
                             bot, user_id, ch_name, niche
                         )
+                    elif mode == "bundle":
+                        await generate_and_upload_bundle_video(
+                            bot, user_id, ch_id, ch_name, bundle_url
+                        )
     finally:
         client.close()
-
 
 async def background_scheduler_loop(bot):
     while True:

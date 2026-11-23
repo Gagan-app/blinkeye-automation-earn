@@ -2532,6 +2532,7 @@ async def generate_and_upload_bundle_video(
         return
 
     import shutil
+    import urllib.request
     import yt_dlp
 
     os.makedirs("downloads", exist_ok=True)
@@ -2539,34 +2540,91 @@ async def generate_and_upload_bundle_video(
     out_tmpl = f"downloads/bundle_{user_id}_{timestamp}.%(ext)s"
     downloaded_file = None
 
-    try:
-        # Step 1: Bundle / playlist items extract karein
-        flat_opts = {
-            "extract_flat": True,
-            "quiet": True,
-            "noplaylist": False,
-        }
-        with yt_dlp.YoutubeDL(flat_opts) as ydl:
-            info = ydl.extract_info(bundle_url, download=False)
+    def extract_gdrive_folder_candidates(folder_url: str):
+        match = re.search(r"/folders/([a-zA-Z0-9_-]+)", folder_url)
+        if not match:
+            return []
+        folder_id = match.group(1)
+        embed_url = f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
+        req = urllib.request.Request(
+            embed_url,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            html_data = resp.read().decode("utf-8", errors="ignore")
 
+        # File IDs and titles extract karne ka try
+        file_ids = re.findall(r'https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)/view', html_data)
+        if not file_ids:
+            file_ids = re.findall(r'data-id="([a-zA-Z0-9_-]+)"', html_data)
+
+        seen = set()
+        items = []
+        idx = 1
+        for fid in file_ids:
+            if fid == folder_id or fid in seen:
+                continue
+            seen.add(fid)
+            view_url = f"https://drive.google.com/file/d/{fid}/view"
+            items.append((view_url, f"Drive Bundle Video {idx} - {channel_name}"))
+            idx += 1
+        return items
+
+    try:
         candidates = []
-        if info and isinstance(info, dict) and info.get("entries"):
-            for entry in info["entries"]:
-                if not entry:
-                    continue
-                vid_url = entry.get("url") or entry.get("webpage_url")
-                if vid_url and not vid_url.startswith("http"):
-                    vid_url = f"https://www.youtube.com/watch?v={vid_url}"
-                if vid_url:
-                    candidates.append((vid_url, entry.get("title") or f"Bundle Video - {channel_name}"))
-        else:
-            title_val = info.get("title") if isinstance(info, dict) else f"Bundle Video - {channel_name}"
-            candidates.append((bundle_url, title_val or f"Bundle Video - {channel_name}"))
+
+        # Step 1: Agar Google Drive folder URL hai to wahan se files nikaalein
+        if "drive.google.com/drive/folders/" in bundle_url:
+            try:
+                candidates = await asyncio.to_thread(
+                    extract_gdrive_folder_candidates, bundle_url
+                )
+            except Exception as gdrive_err:
+                logging.warning(f"Google Drive folder parse warning: {gdrive_err}")
+
+        # Step 2: Baaki links (YouTube playlist, direct video, Drive file, etc.) ke liye yt-dlp
+        if not candidates:
+            flat_opts = {
+                "extract_flat": True,
+                "quiet": True,
+                "noplaylist": False,
+            }
+            with yt_dlp.YoutubeDL(flat_opts) as ydl:
+                info = ydl.extract_info(bundle_url, download=False)
+
+            if info and isinstance(info, dict) and info.get("entries"):
+                for entry in info["entries"]:
+                    if not entry:
+                        continue
+                    vid_url = entry.get("url") or entry.get("webpage_url")
+                    if vid_url and not vid_url.startswith("http"):
+                        vid_url = f"https://www.youtube.com/watch?v={vid_url}"
+                    if vid_url:
+                        candidates.append(
+                            (vid_url, entry.get("title") or f"Bundle Video - {channel_name}")
+                        )
+            else:
+                title_val = (
+                    info.get("title")
+                    if isinstance(info, dict)
+                    else f"Bundle Video - {channel_name}"
+                )
+                candidates.append(
+                    (bundle_url, title_val or f"Bundle Video - {channel_name}")
+                )
 
         if not candidates:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"⚠️ **{channel_name}** ke bundle link se koi video nahi mil paayi. "
+                    "Check karein ki link/folder **Public (Anyone with the link)** hai ya nahi."
+                ),
+                parse_mode="Markdown",
+            )
             return
 
-        # Step 2: Pehla un-uploaded item chunein
+        # Step 3: Pehla un-uploaded item chunein
         client = get_db()
         try:
             res_done = client.execute(
@@ -2589,7 +2647,7 @@ async def generate_and_upload_bundle_video(
         target_url, raw_title = next_item
         video_title = f"{str(raw_title)[:80]} #shorts"
 
-        # Step 3: Audio + Video ke saath download karein
+        # Step 4: Audio + Video ke saath download karein
         has_ffmpeg = shutil.which("ffmpeg") is not None
         if has_ffmpeg:
             ydl_opts = {
@@ -2627,7 +2685,9 @@ async def generate_and_upload_bundle_video(
 
         token_file = f"token_{user_id}.json"
         if not os.path.exists(token_file):
-            raise FileNotFoundError(f"OAuth token ({token_file}) missing. Please reconnect YouTube.")
+            raise FileNotFoundError(
+                f"OAuth token ({token_file}) missing. Please reconnect YouTube."
+            )
 
         creds = Credentials.from_authorized_user_file(token_file, YOUTUBE_SCOPES)
         youtube = build("youtube", "v3", credentials=creds)
@@ -2635,7 +2695,7 @@ async def generate_and_upload_bundle_video(
         body = {
             "snippet": {
                 "title": video_title,
-                "description": f"Uploaded from Video Bundle via Blinkeyes Automation\n\n#shorts",
+                "description": "Uploaded from Video Bundle via Blinkeyes Automation\n\n#shorts",
                 "tags": ["shorts", "bundle", "autopost", "blinkeyes"],
                 "categoryId": "22",
             },
@@ -2658,7 +2718,12 @@ async def generate_and_upload_bundle_video(
                 INSERT INTO uploaded_bundle_items (user_id, channel_id, item_url, uploaded_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (user_id, channel_id, target_url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                (
+                    user_id,
+                    channel_id,
+                    target_url,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
             )
         finally:
             client.close()
@@ -2687,7 +2752,7 @@ async def generate_and_upload_bundle_video(
                 os.remove(downloaded_file)
             except Exception:
                 pass
-                
+                     
 async def check_and_run_schedules(bot):
     current_time = datetime.now().strftime("%H:%M")
     client = get_db()

@@ -219,6 +219,28 @@ def init_tables():
                 uploaded_at TEXT
             )
             """,
+                        """
+            CREATE TABLE IF NOT EXISTS bundle_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                channel_id INTEGER,
+                folder_name TEXT,
+                created_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS bundle_folder_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER,
+                user_id INTEGER,
+                channel_id INTEGER,
+                item_type TEXT,
+                item_value TEXT,
+                title TEXT,
+                status TEXT DEFAULT 'pending',
+                uploaded_at TEXT
+            )
+            """,
             """
             CREATE TABLE IF NOT EXISTS connected_channels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -773,47 +795,126 @@ async def handle_text_messages(
     user = update.effective_user
     text_content = update.message.text.strip() if update.message.text else ""
 
-    # 0. Saving Video Bundle URL
-    if context.user_data.get("waiting_for_bundle_url"):
-        ch_id = context.user_data.get("bundle_target_ch_id")
-
-        if not ch_id:
-            context.user_data["waiting_for_bundle_url"] = False
-            context.user_data.pop("bundle_target_ch_id", None)
-            await update.message.reply_text(
-                "⚠️ Channel context missing. Dobara 'Connect Video Bundle' par click karein."
-            )
+    # 0a. Bot Bundle Folder creation
+    if context.user_data.get("waiting_for_bf_name"):
+        context.user_data["waiting_for_bf_name"] = False
+        ch_id = context.user_data.pop("bf_ch_id", None)
+        if not text_content or not ch_id:
+            await update.message.reply_text("⚠️ Sahi folder naam bhejein.")
             return
-
-        if not re.match(r"^https?://", text_content, re.IGNORECASE):
-            await update.message.reply_text(
-                "⚠️ Kripya sahi `http://` ya `https://` bundle link bhejein."
-            )
-            return
-
-        context.user_data["waiting_for_bundle_url"] = False
-        context.user_data.pop("bundle_target_ch_id", None)
 
         client = get_db()
         try:
             client.execute(
                 """
+                INSERT INTO bundle_folders (user_id, channel_id, folder_name, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    user.id,
+                    ch_id,
+                    text_content[:60],
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            res_id = client.execute("SELECT last_insert_rowid()")
+            new_fid = extract_rows(res_id)[0][0]
+            client.execute(
+                """
                 UPDATE connected_channels
-                SET active_mode = 'bundle', bundle_url = ?
+                SET bundle_url = ?
                 WHERE id = ? AND user_id = ?
                 """,
-                (text_content, ch_id, user.id),
+                (f"botfolder:{new_fid}", ch_id, user.id),
+            )
+        finally:
+            client.close()
+
+        context.user_data["waiting_for_bf_item"] = True
+        context.user_data["bf_folder_id"] = new_fid
+        context.user_data["bf_ch_id"] = ch_id
+        await update.message.reply_text(
+            f"✅ Folder **{text_content[:60]}** ban gaya!\n"
+            "Ab ek saath saari **Videos** ya **Video Links** bhejein, aur khatam hone par **Start Now** dabayein.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 0b. Bot Bundle Folder rename
+    if context.user_data.get("waiting_for_bf_rename"):
+        context.user_data["waiting_for_bf_rename"] = False
+        folder_id = context.user_data.pop("bf_folder_id", None)
+        ch_id = context.user_data.pop("bf_ch_id", None)
+        if not text_content or not folder_id:
+            await update.message.reply_text("⚠️ Sahi naya naam bhejein.")
+            return
+
+        client = get_db()
+        try:
+            client.execute(
+                "UPDATE bundle_folders SET folder_name = ? WHERE id = ? AND user_id = ?",
+                (text_content[:60], folder_id, user.id),
             )
         finally:
             client.close()
 
         await update.message.reply_text(
-            f"✅ **Video Bundle Connected!**\n\n📦 Bundle URL: `{text_content}`\n"
-            "⏰ Ab aapke set kiye gaye **Schedule Slots** par is bundle se ek-ek video upload hoti rahegi.",
+            f"✅ Folder ka naam badal kar **{text_content[:60]}** kar diya gaya hai!",
             parse_mode="Markdown",
         )
         return
-        
+
+    # 0c. Bulk add video file or video link into bot folder
+    if context.user_data.get("waiting_for_bf_item"):
+        folder_id = context.user_data.get("bf_folder_id")
+        ch_id = context.user_data.get("bf_ch_id")
+        if not folder_id or not ch_id:
+            context.user_data["waiting_for_bf_item"] = False
+            await update.message.reply_text("⚠️ Folder context missing.")
+            return
+
+        item_type = None
+        item_val = None
+        title_val = "Bot Folder Video"
+
+        if update.message.video:
+            item_type = "tg_video"
+            item_val = update.message.video.file_id
+            title_val = update.message.video.file_name or "Telegram Video"
+        elif update.message.document and (
+            update.message.document.mime_type or ""
+        ).startswith("video/"):
+            item_type = "tg_video"
+            item_val = update.message.document.file_id
+            title_val = update.message.document.file_name or "Telegram Video File"
+        elif text_content and re.match(r"^https?://", text_content, re.IGNORECASE):
+            item_type = "link"
+            item_val = text_content
+            title_val = "Linked Video"
+        else:
+            await update.message.reply_text(
+                "⚠️ Kripya sahi **Video Link** (`https://...`) ya **Video File** bhejein."
+            )
+            return
+
+        client = get_db()
+        try:
+            client.execute(
+                """
+                INSERT INTO bundle_folder_items (folder_id, user_id, channel_id, item_type, item_value, title, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (folder_id, user.id, ch_id, item_type, item_val, title_val[:80]),
+            )
+        finally:
+            client.close()
+
+        await update.message.reply_text(
+            f"📥 Folder me add ho gaya (`{title_val[:50]}`)! Aur videos/links bhejne ke liye bhejte rahein.",
+            parse_mode="Markdown",
+        )
+        return
+
     # 1. Admin replying to user ticket
     if context.user_data.get("admin_replying_to_user") and user.id == ADMIN_ID:
         target_user_id = int(context.user_data.pop("admin_replying_to_user"))
@@ -1606,13 +1707,7 @@ async def handle_mode_niche_pick(
             mode = data[1]
             ch_id = int(data[2])
             if mode == "bundle":
-                context.user_data["waiting_for_bundle_url"] = True
-                context.user_data["bundle_target_ch_id"] = ch_id
-                await query.message.reply_text(
-                    "📦 **Connect Video Bundle:**\n\n"
-                    "Kripya apna **YouTube Playlist link** ya **Google Drive / Video Bundle URL** yahan chat mein bhej dein:",
-                    parse_mode="Markdown",
-                )
+                await open_bot_bundle_menu(update, context, ch_id)
                 return
 
             client.execute(
@@ -1637,7 +1732,7 @@ async def handle_mode_niche_pick(
             await show_specific_channel_modes(update, context, ch_id)
     finally:
         client.close()
-
+        
 async def open_bot_bundle_menu(
     update: Update, context: ContextTypes.DEFAULT_TYPE, ch_id: int
 ):
@@ -2907,7 +3002,9 @@ async def generate_and_upload_bundle_video(
         if not match:
             return []
         folder_id = match.group(1)
-        embed_url = f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
+        embed_url = (
+            f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
+        )
         req = urllib.request.Request(
             embed_url,
             headers={"User-Agent": "Mozilla/5.0"},
@@ -2915,8 +3012,10 @@ async def generate_and_upload_bundle_video(
         with urllib.request.urlopen(req, timeout=20) as resp:
             html_data = resp.read().decode("utf-8", errors="ignore")
 
-        # File IDs and titles extract karne ka try
-        file_ids = re.findall(r'https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)/view', html_data)
+        file_ids = re.findall(
+            r"https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)/view",
+            html_data,
+        )
         if not file_ids:
             file_ids = re.findall(r'data-id="([a-zA-Z0-9_-]+)"', html_data)
 
@@ -2928,23 +3027,181 @@ async def generate_and_upload_bundle_video(
                 continue
             seen.add(fid)
             view_url = f"https://drive.google.com/file/d/{fid}/view"
-            items.append((view_url, f"Drive Bundle Video {idx} - {channel_name}"))
+            items.append(
+                (view_url, f"Drive Bundle Video {idx} - {channel_name}")
+            )
             idx += 1
         return items
 
-    try:
-        candidates = []
+    def _download_with_ytdlp(target_url: str):
+        has_ffmpeg = shutil.which("ffmpeg") is not None
+        ydl_opts = (
+            {
+                "format": (
+                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+                ),
+                "outtmpl": out_tmpl,
+                "merge_output_format": "mp4",
+                "noplaylist": True,
+                "quiet": True,
+            }
+            if has_ffmpeg
+            else {
+                "format": "best[ext=mp4]/best",
+                "outtmpl": out_tmpl,
+                "noplaylist": True,
+                "quiet": True,
+            }
+        )
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            dl_info = ydl.extract_info(target_url, download=True)
+            prepared = ydl.prepare_filename(dl_info) if dl_info else None
 
-        # Step 1: Agar Google Drive folder URL hai to wahan se files nikaalein
+        merged_mp4 = f"downloads/bundle_{user_id}_{timestamp}.mp4"
+        if has_ffmpeg and os.path.exists(merged_mp4):
+            return merged_mp4
+        if prepared and os.path.exists(prepared):
+            return prepared
+        for fname in os.listdir("downloads"):
+            if fname.startswith(f"bundle_{user_id}_{timestamp}"):
+                return os.path.join("downloads", fname)
+        return None
+
+    def _upload_to_youtube(file_path: str, title: str, description: str):
+        token_file = f"token_{user_id}.json"
+        if not os.path.exists(token_file):
+            raise FileNotFoundError(
+                f"OAuth token ({token_file}) missing. Please reconnect YouTube."
+            )
+
+        creds = Credentials.from_authorized_user_file(
+            token_file, YOUTUBE_SCOPES
+        )
+        youtube = build("youtube", "v3", credentials=creds)
+
+        body = {
+            "snippet": {
+                "title": title,
+                "description": description,
+                "tags": ["shorts", "bundle", "autopost", "blinkeyes"],
+                "categoryId": "22",
+            },
+            "status": {"privacyStatus": "public"},
+        }
+
+        media = MediaFileUpload(file_path, chunksize=-1, resumable=True)
+        upload_req = youtube.videos().insert(
+            part=",".join(body.keys()), body=body, media_body=media
+        )
+
+        response = None
+        while response is None:
+            _, response = upload_req.next_chunk()
+        return response.get("id")
+
+    try:
+        # 1. Bot Folder Mode (`botfolder:<folder_id>`)
+        if str(bundle_url).startswith("botfolder:"):
+            try:
+                folder_id = int(str(bundle_url).split(":", 1)[1])
+            except Exception:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=f"⚠️ **{channel_name}** ka folder ID invalid hai.",
+                    parse_mode="Markdown",
+                )
+                return
+
+            client = get_db()
+            try:
+                res_item = client.execute(
+                    """
+                    SELECT id, item_type, item_value, title
+                    FROM bundle_folder_items
+                    WHERE folder_id = ? AND user_id = ? AND status = 'pending'
+                    ORDER BY id ASC LIMIT 1
+                    """,
+                    (folder_id, user_id),
+                )
+                p_rows = extract_rows(res_item)
+            finally:
+                client.close()
+
+            if not p_rows:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"📂 **{channel_name}** ke active folder me ab koi"
+                        " pending video nahi bachi!"
+                    ),
+                    parse_mode="Markdown",
+                )
+                return
+
+            item_id, item_type, item_val, raw_title = p_rows[0]
+            video_title = (
+                f"{str(raw_title or 'Bot Folder Video')[:80]} #shorts"
+            )
+
+            if item_type == "tg_video":
+                tg_file = await bot.get_file(item_val)
+                downloaded_file = (
+                    f"downloads/bundle_{user_id}_{timestamp}.mp4"
+                )
+                await tg_file.download_to_drive(custom_path=downloaded_file)
+            else:
+                downloaded_file = await asyncio.to_thread(
+                    _download_with_ytdlp, item_val
+                )
+
+            if not downloaded_file or not os.path.exists(downloaded_file):
+                raise FileNotFoundError(
+                    "Bot folder video file could not be prepared."
+                )
+
+            vid_id = await asyncio.to_thread(
+                _upload_to_youtube,
+                downloaded_file,
+                video_title,
+                "Uploaded from Bot Bundle Folder via Blinkeyes Automation\n\n#shorts",
+            )
+
+            client = get_db()
+            try:
+                client.execute(
+                    """
+                    UPDATE bundle_folder_items
+                    SET status = 'uploaded', uploaded_at = ?
+                    WHERE id = ?
+                    """,
+                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_id),
+                )
+            finally:
+                client.close()
+
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"✅ **Folder Video Uploaded!**\n\n📺 Channel:"
+                    f" **{channel_name}**\n🎬 Title: `{video_title}`\n🔗"
+                    f" Video ID: `{vid_id}`"
+                ),
+                parse_mode="Markdown",
+            )
+            return
+
+        # 2. External URL / Playlist / Google Drive Folder Mode
+        candidates = []
         if "drive.google.com/drive/folders/" in bundle_url:
             try:
                 candidates = await asyncio.to_thread(
                     extract_gdrive_folder_candidates, bundle_url
                 )
             except Exception as gdrive_err:
-                logging.warning(f"Google Drive folder parse warning: {gdrive_err}")
+                logging.warning(
+                    f"Google Drive folder parse warning: {gdrive_err}"
+                )
 
-        # Step 2: Baaki links (YouTube playlist, direct video, Drive file, etc.) ke liye yt-dlp
         if not candidates:
             flat_opts = {
                 "extract_flat": True,
@@ -2962,46 +3219,57 @@ async def generate_and_upload_bundle_video(
                     if vid_url and not vid_url.startswith("http"):
                         vid_url = f"https://www.youtube.com/watch?v={vid_url}"
                     if vid_url:
-                        candidates.append(
-                            (vid_url, entry.get("title") or f"Bundle Video - {channel_name}")
-                        )
+                        candidates.append((
+                            vid_url,
+                            entry.get("title")
+                            or f"Bundle Video - {channel_name}",
+                        ))
             else:
                 title_val = (
                     info.get("title")
                     if isinstance(info, dict)
                     else f"Bundle Video - {channel_name}"
                 )
-                candidates.append(
-                    (bundle_url, title_val or f"Bundle Video - {channel_name}")
-                )
+                candidates.append((
+                    bundle_url,
+                    title_val or f"Bundle Video - {channel_name}",
+                ))
 
         if not candidates:
             await bot.send_message(
                 chat_id=user_id,
                 text=(
-                    f"⚠️ **{channel_name}** ke bundle link se koi video nahi mil paayi. "
-                    "Check karein ki link/folder **Public (Anyone with the link)** hai ya nahi."
+                    f"⚠️ **{channel_name}** ke bundle link se koi video nahi"
+                    " mil paayi. Check karein ki link/folder **Public (Anyone"
+                    " with the link)** hai ya nahi."
                 ),
                 parse_mode="Markdown",
             )
             return
 
-        # Step 3: Pehla un-uploaded item chunein
         client = get_db()
         try:
             res_done = client.execute(
-                "SELECT item_url FROM uploaded_bundle_items WHERE user_id = ? AND channel_id = ?",
+                (
+                    "SELECT item_url FROM uploaded_bundle_items WHERE user_id"
+                    " = ? AND channel_id = ?"
+                ),
                 (user_id, channel_id),
             )
             done_set = {row[0] for row in extract_rows(res_done)}
         finally:
             client.close()
 
-        next_item = next(((u, t) for (u, t) in candidates if u not in done_set), None)
+        next_item = next(
+            ((u, t) for (u, t) in candidates if u not in done_set), None
+        )
         if not next_item:
             await bot.send_message(
                 chat_id=user_id,
-                text=f"📦 **{channel_name}** ke Video Bundle ke saare videos upload ho chuke hain!",
+                text=(
+                    f"📦 **{channel_name}** ke Video Bundle ke saare videos"
+                    " upload ho chuke hain!"
+                ),
                 parse_mode="Markdown",
             )
             return
@@ -3009,69 +3277,20 @@ async def generate_and_upload_bundle_video(
         target_url, raw_title = next_item
         video_title = f"{str(raw_title)[:80]} #shorts"
 
-        # Step 4: Audio + Video ke saath download karein
-        has_ffmpeg = shutil.which("ffmpeg") is not None
-        if has_ffmpeg:
-            ydl_opts = {
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
-                "outtmpl": out_tmpl,
-                "merge_output_format": "mp4",
-                "noplaylist": True,
-                "quiet": True,
-            }
-        else:
-            ydl_opts = {
-                "format": "best[ext=mp4]/best",
-                "outtmpl": out_tmpl,
-                "noplaylist": True,
-                "quiet": True,
-            }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            dl_info = ydl.extract_info(target_url, download=True)
-            if dl_info:
-                downloaded_file = ydl.prepare_filename(dl_info)
-
-        merged_mp4 = f"downloads/bundle_{user_id}_{timestamp}.mp4"
-        if has_ffmpeg and os.path.exists(merged_mp4):
-            downloaded_file = merged_mp4
-
+        downloaded_file = await asyncio.to_thread(
+            _download_with_ytdlp, target_url
+        )
         if not downloaded_file or not os.path.exists(downloaded_file):
-            for fname in os.listdir("downloads"):
-                if fname.startswith(f"bundle_{user_id}_{timestamp}"):
-                    downloaded_file = os.path.join("downloads", fname)
-                    break
-
-        if not downloaded_file or not os.path.exists(downloaded_file):
-            raise FileNotFoundError("Bundle video file could not be downloaded.")
-
-        token_file = f"token_{user_id}.json"
-        if not os.path.exists(token_file):
             raise FileNotFoundError(
-                f"OAuth token ({token_file}) missing. Please reconnect YouTube."
+                "Bundle video file could not be downloaded."
             )
 
-        creds = Credentials.from_authorized_user_file(token_file, YOUTUBE_SCOPES)
-        youtube = build("youtube", "v3", credentials=creds)
-
-        body = {
-            "snippet": {
-                "title": video_title,
-                "description": "Uploaded from Video Bundle via Blinkeyes Automation\n\n#shorts",
-                "tags": ["shorts", "bundle", "autopost", "blinkeyes"],
-                "categoryId": "22",
-            },
-            "status": {"privacyStatus": "public"},
-        }
-
-        media = MediaFileUpload(downloaded_file, chunksize=-1, resumable=True)
-        upload_req = youtube.videos().insert(
-            part=",".join(body.keys()), body=body, media_body=media
+        vid_id = await asyncio.to_thread(
+            _upload_to_youtube,
+            downloaded_file,
+            video_title,
+            "Uploaded from Video Bundle via Blinkeyes Automation\n\n#shorts",
         )
-
-        response = None
-        while response is None:
-            _, response = upload_req.next_chunk()
 
         client = get_db()
         try:
@@ -3093,8 +3312,9 @@ async def generate_and_upload_bundle_video(
         await bot.send_message(
             chat_id=user_id,
             text=(
-                f"✅ **Bundle Video Uploaded!**\n\n📺 Channel: **{channel_name}**\n"
-                f"🎬 Title: `{video_title}`\n🔗 Video ID: `{response.get('id')}`"
+                f"✅ **Bundle Video Uploaded!**\n\n📺 Channel:"
+                f" **{channel_name}**\n🎬 Title: `{video_title}`\n🔗"
+                f" Video ID: `{vid_id}`"
             ),
             parse_mode="Markdown",
         )
@@ -3351,6 +3571,9 @@ def main():
     app.add_handler(
         CallbackQueryHandler(prompt_add_account, pattern="^add_account$")
     )
+    app.add_handler(
+        CallbackQueryHandler(bot_folder_callbacks, pattern="^bf_")
+    )    
     app.add_handler(
         CallbackQueryHandler(start_youtube_auth, pattern="^auth_youtube$")
     )

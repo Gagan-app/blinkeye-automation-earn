@@ -1637,7 +1637,365 @@ async def handle_mode_niche_pick(
             await show_specific_channel_modes(update, context, ch_id)
     finally:
         client.close()
-        
+
+async def open_bot_bundle_menu(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, ch_id: int
+):
+    query = update.callback_query
+    user_id = update.effective_user.id
+
+    client = get_db()
+    try:
+        res_f = client.execute(
+            """
+            SELECT id, folder_name FROM bundle_folders
+            WHERE user_id = ? AND channel_id = ? ORDER BY id DESC
+            """,
+            (user_id, ch_id),
+        )
+        folders = extract_rows(res_f)
+
+        res_ch = client.execute(
+            """
+            SELECT bundle_url, active_mode FROM connected_channels
+            WHERE id = ? AND user_id = ?
+            """,
+            (ch_id, user_id),
+        )
+        ch_rows = extract_rows(res_ch)
+    finally:
+        client.close()
+
+    current_bundle = ch_rows[0][0] if ch_rows else "none"
+    current_mode = ch_rows[0][1] if ch_rows else "none"
+
+    active_folder_id = None
+    if current_bundle and str(current_bundle).startswith("botfolder:"):
+        try:
+            active_folder_id = int(str(current_bundle).split(":", 1)[1])
+        except Exception:
+            active_folder_id = None
+
+    is_running = current_mode == "bundle" and active_folder_id is not None
+
+    text = (
+        "📁 **Bot Bundle Folders:**\n\n"
+        f"📡 **Status:** `{'🟢 RUNNING (Schedule Active)' if is_running else '🔴 STOPPED'}`\n\n"
+        "Folder banayein, ek saath saari videos/links daalein, aur **Start Now** dabayein:\n\n"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "➕ Create Folder", callback_data=f"bf_create_{ch_id}"
+            ),
+            InlineKeyboardButton(
+                "⏹️ Stop Now", callback_data=f"bf_stop_{ch_id}"
+            ),
+        ]
+    ]
+
+    client = get_db()
+    try:
+        for f_id, f_name in folders:
+            res_cnt = client.execute(
+                """
+                SELECT COUNT(*) FROM bundle_folder_items
+                WHERE folder_id = ? AND status = 'pending'
+                """,
+                (f_id,),
+            )
+            pending_cnt = (
+                extract_rows(res_cnt)[0][0] if extract_rows(res_cnt) else 0
+            )
+            mark = (
+                "🟢 "
+                if (active_folder_id == f_id and current_mode == "bundle")
+                else "📂 "
+            )
+            text += f"{mark}**{f_name}** (`#{f_id}`) — Pending: `{pending_cnt}`\n"
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"{mark}{f_name} ({pending_cnt})",
+                    callback_data=f"bf_open_{f_id}_{ch_id}",
+                ),
+                InlineKeyboardButton(
+                    "✏️ Edit", callback_data=f"bf_edit_{f_id}_{ch_id}"
+                ),
+                InlineKeyboardButton(
+                    "▶️ Start Now", callback_data=f"bf_start_{f_id}_{ch_id}"
+                ),
+            ])
+    finally:
+        client.close()
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "« Back to Channel Modes", callback_data=f"select_ch_{ch_id}_YouTube"
+        )
+    ])
+    await query.message.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+    )
+
+
+async def open_single_bundle_folder(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    folder_id: int,
+    ch_id: int,
+):
+    query = update.callback_query
+    user_id = update.effective_user.id
+
+    client = get_db()
+    try:
+        res_f = client.execute(
+            "SELECT folder_name FROM bundle_folders WHERE id = ? AND user_id = ?",
+            (folder_id, user_id),
+        )
+        f_rows = extract_rows(res_f)
+        if not f_rows:
+            await query.answer("Folder not found!", show_alert=True)
+            return
+        folder_name = f_rows[0][0]
+
+        res_items = client.execute(
+            """
+            SELECT id, item_type, item_value, title, status
+            FROM bundle_folder_items WHERE folder_id = ? ORDER BY id ASC
+            """,
+            (folder_id,),
+        )
+        items = extract_rows(res_items)
+    finally:
+        client.close()
+
+    pending_cnt = sum(1 for x in items if x[4] == "pending")
+    uploaded_cnt = sum(1 for x in items if x[4] == "uploaded")
+
+    text = (
+        f"📂 **Folder: {folder_name}**\n"
+        f"⏳ Pending: `{pending_cnt}` | ✅ Uploaded: `{uploaded_cnt}`\n\n"
+        "Saari videos/links ek saath add karne ke liye **Add Videos / Links** dabayein,\n"
+        "aur shuru karne ke liye **▶️ Start Now** dabayein:"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "➕ Add Videos / Links",
+                callback_data=f"bf_additem_{folder_id}_{ch_id}",
+            ),
+            InlineKeyboardButton(
+                "✏️ Edit Folder", callback_data=f"bf_edit_{folder_id}_{ch_id}"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "▶️ Start Now", callback_data=f"bf_start_{folder_id}_{ch_id}"
+            ),
+            InlineKeyboardButton(
+                "⏹️ Stop Now", callback_data=f"bf_stop_{ch_id}"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "« Back to Folders", callback_data=f"bf_menu_{ch_id}"
+            )
+        ],
+    ]
+    await query.message.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+    )
+
+
+async def show_edit_folder_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    folder_id: int,
+    ch_id: int,
+):
+    query = update.callback_query
+    user_id = update.effective_user.id
+
+    client = get_db()
+    try:
+        res_f = client.execute(
+            "SELECT folder_name FROM bundle_folders WHERE id = ? AND user_id = ?",
+            (folder_id, user_id),
+        )
+        rows = extract_rows(res_f)
+    finally:
+        client.close()
+
+    if not rows:
+        await query.answer("Folder not found!", show_alert=True)
+        return
+
+    folder_name = rows[0][0]
+    text = (
+        f"✏️ **Edit Folder: {folder_name}**\n\n"
+        "Kripya select karein aap kya edit karna chahte hain:"
+    )
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📝 Rename Folder",
+                callback_data=f"bf_rename_{folder_id}_{ch_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "➕ Add More Videos / Links",
+                callback_data=f"bf_additem_{folder_id}_{ch_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🗑️ Delete Folder",
+                callback_data=f"bf_delete_{folder_id}_{ch_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "« Back to Folder", callback_data=f"bf_open_{folder_id}_{ch_id}"
+            )
+        ],
+    ]
+    await query.message.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+    )
+
+
+async def bot_folder_callbacks(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("_")
+    sub = parts[1]
+
+    if sub == "menu":
+        ch_id = int(parts[2])
+        context.user_data["waiting_for_bf_item"] = False
+        await open_bot_bundle_menu(update, context, ch_id)
+
+    elif sub == "create":
+        ch_id = int(parts[2])
+        context.user_data["waiting_for_bf_name"] = True
+        context.user_data["waiting_for_bf_item"] = False
+        context.user_data["bf_ch_id"] = ch_id
+        await query.message.reply_text(
+            "📁 Kripya naye **Folder ka naam** bhejein (jaise: `Shorts Pack 1`):",
+            parse_mode="Markdown",
+        )
+
+    elif sub == "open":
+        folder_id = int(parts[2])
+        ch_id = int(parts[3])
+        context.user_data["waiting_for_bf_item"] = False
+        await open_single_bundle_folder(update, context, folder_id, ch_id)
+
+    elif sub == "edit":
+        folder_id = int(parts[2])
+        ch_id = int(parts[3])
+        context.user_data["waiting_for_bf_item"] = False
+        await show_edit_folder_menu(update, context, folder_id, ch_id)
+
+    elif sub == "rename":
+        folder_id = int(parts[2])
+        ch_id = int(parts[3])
+        context.user_data["waiting_for_bf_rename"] = True
+        context.user_data["bf_folder_id"] = folder_id
+        context.user_data["bf_ch_id"] = ch_id
+        await query.message.reply_text(
+            "📝 Kripya folder ka **naya naam** bhejein:",
+            parse_mode="Markdown",
+        )
+
+    elif sub == "delete":
+        folder_id = int(parts[2])
+        ch_id = int(parts[3])
+        client = get_db()
+        try:
+            client.execute(
+                "DELETE FROM bundle_folder_items WHERE folder_id = ? AND user_id = ?",
+                (folder_id, update.effective_user.id),
+            )
+            client.execute(
+                "DELETE FROM bundle_folders WHERE id = ? AND user_id = ?",
+                (folder_id, update.effective_user.id),
+            )
+            client.execute(
+                """
+                UPDATE connected_channels
+                SET active_mode = 'none', bundle_url = 'none'
+                WHERE id = ? AND user_id = ? AND bundle_url = ?
+                """,
+                (ch_id, update.effective_user.id, f"botfolder:{folder_id}"),
+            )
+        finally:
+            client.close()
+        await open_bot_bundle_menu(update, context, ch_id)
+
+    elif sub == "additem":
+        folder_id = int(parts[2])
+        ch_id = int(parts[3])
+        context.user_data["waiting_for_bf_item"] = True
+        context.user_data["bf_folder_id"] = folder_id
+        context.user_data["bf_ch_id"] = ch_id
+        await query.message.reply_text(
+            "📥 **Bulk Add Mode Active:**\n"
+            "Ek ke baad ek jitni chahe **Video Files** ya **Video Links (`https://...`)** bhejte rahein.\n"
+            "Jab sab add ho jayein to **▶️ Start Now** dabayein!",
+            parse_mode="Markdown",
+        )
+
+    elif sub == "start":
+        folder_id = int(parts[2])
+        ch_id = int(parts[3])
+        context.user_data["waiting_for_bf_item"] = False
+        client = get_db()
+        try:
+            client.execute(
+                """
+                UPDATE connected_channels
+                SET active_mode = 'bundle', bundle_url = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (f"botfolder:{folder_id}", ch_id, update.effective_user.id),
+            )
+        finally:
+            client.close()
+
+        await query.message.reply_text(
+            f"▶️ **Started!** Folder `#{folder_id}` ab active hai aur roz aapke **Schedule Slots** ke hisaab se ek-ek video upload karega.",
+            parse_mode="Markdown",
+        )
+        await open_single_bundle_folder(update, context, folder_id, ch_id)
+
+    elif sub == "stop":
+        ch_id = int(parts[2])
+        context.user_data["waiting_for_bf_item"] = False
+        client = get_db()
+        try:
+            client.execute(
+                """
+                UPDATE connected_channels
+                SET active_mode = 'none'
+                WHERE id = ? AND user_id = ?
+                """,
+                (ch_id, update.effective_user.id),
+            )
+        finally:
+            client.close()
+
+        await query.message.reply_text(
+            "⏹️ **Stopped!** Is channel ka bundle auto-upload abhi ke liye rok diya gaya hai.",
+            parse_mode="Markdown",
+        )
+        await open_bot_bundle_menu(update, context, ch_id)
 
 async def channel_schedule_menu(
     update: Update, context: ContextTypes.DEFAULT_TYPE

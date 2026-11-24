@@ -2796,14 +2796,14 @@ async def check_and_run_schedules(bot):
         client.close()
 
 async def background_scheduler_loop(bot):
+    logging.info("⏰ Background scheduler loop started.")
     while True:
         try:
             await check_and_run_schedules(bot)
         except Exception as e:
             logging.error(f"Scheduler Loop Error: {e}")
         await asyncio.sleep(60)
-
-
+        
 # ---------------------------------------------------------
 # 🌐 FLASK HEALTH & PAYMENT WEBHOOK SERVER
 # ---------------------------------------------------------

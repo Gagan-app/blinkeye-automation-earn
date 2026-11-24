@@ -775,10 +775,11 @@ async def handle_text_messages(
 
     # 0. Saving Video Bundle URL
     if context.user_data.get("waiting_for_bundle_url"):
-        ch_id = context.user_data.pop("bundle_target_ch_id", None)
-        context.user_data["waiting_for_bundle_url"] = False
+        ch_id = context.user_data.get("bundle_target_ch_id")
 
         if not ch_id:
+            context.user_data["waiting_for_bundle_url"] = False
+            context.user_data.pop("bundle_target_ch_id", None)
             await update.message.reply_text(
                 "⚠️ Channel context missing. Dobara 'Connect Video Bundle' par click karein."
             )
@@ -789,6 +790,9 @@ async def handle_text_messages(
                 "⚠️ Kripya sahi `http://` ya `https://` bundle link bhejein."
             )
             return
+
+        context.user_data["waiting_for_bundle_url"] = False
+        context.user_data.pop("bundle_target_ch_id", None)
 
         client = get_db()
         try:
@@ -809,7 +813,7 @@ async def handle_text_messages(
             parse_mode="Markdown",
         )
         return
-
+        
     # 1. Admin replying to user ticket
     if context.user_data.get("admin_replying_to_user") and user.id == ADMIN_ID:
         target_user_id = int(context.user_data.pop("admin_replying_to_user"))

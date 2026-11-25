@@ -8,6 +8,8 @@ import string
 import threading
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+IST = ZoneInfo("Asia/Kolkata")
 from urllib.parse import parse_qs, urlparse
 
 from flask import Flask, jsonify, request
@@ -3336,7 +3338,7 @@ async def generate_and_upload_bundle_video(
                 pass
                      
 async def check_and_run_schedules(bot):
-    current_time = datetime.now().strftime("%H:%M")
+    current_time = datetime.now(IST).strftime("%H:%M")
     client = get_db()
     try:
         res_sch = client.execute(

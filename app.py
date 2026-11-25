@@ -3379,6 +3379,7 @@ async def check_and_run_schedules(bot):
     finally:
         client.close()
 
+
 async def background_scheduler_loop(bot):
     logging.info("⏰ Background scheduler loop started.")
     while True:
